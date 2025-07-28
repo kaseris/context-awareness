@@ -21,11 +21,25 @@ class EOMTWrapper(nn.Module):
         self.model = model
         
     def forward(self, pixel_values):
-        """Forward pass that returns the logits for CoreML conversion"""
+        """Forward pass that returns the appropriate output for CoreML conversion"""
         outputs = self.model(pixel_values=pixel_values)
-        return outputs.logits
+        
+        # Check what attributes are available in the output
+        if hasattr(outputs, 'logits'):
+            return outputs.logits
+        elif hasattr(outputs, 'segmentation_logits'):
+            return outputs.segmentation_logits
+        elif hasattr(outputs, 'last_hidden_state'):
+            return outputs.last_hidden_state
+        else:
+            # If none of the expected attributes exist, return the raw output
+            # This might be a tuple or other structure
+            if isinstance(outputs, tuple):
+                return outputs[0]  # Return first element if it's a tuple
+            else:
+                return outputs
 
-def create_sample_input(processor, image_size=(640, 640)):
+def create_sample_input(processor, device, image_size=(640, 640)):
     """Create a sample input for CoreML conversion"""
     # Create a dummy image
     dummy_image = Image.new('RGB', image_size, color='white')
@@ -36,7 +50,30 @@ def create_sample_input(processor, image_size=(640, 640)):
         return_tensors="pt",
     )
     
-    return inputs['pixel_values']
+    # Move to the same device as the model
+    pixel_values = inputs['pixel_values'].to(device)
+    return pixel_values
+
+def debug_model_output(model, sample_input):
+    """Debug function to inspect model output structure"""
+    print("🔍 Debugging model output structure...")
+    
+    with torch.inference_mode():
+        outputs = model(pixel_values=sample_input)
+    
+    print(f"Output type: {type(outputs)}")
+    print(f"Output attributes: {dir(outputs)}")
+    
+    if hasattr(outputs, '__dict__'):
+        print(f"Output dict keys: {outputs.__dict__.keys()}")
+    
+    # Try to access common attributes
+    for attr in ['logits', 'segmentation_logits', 'last_hidden_state', 'hidden_states', 'attentions']:
+        if hasattr(outputs, attr):
+            value = getattr(outputs, attr)
+            print(f"  {attr}: {type(value)}, shape: {value.shape if hasattr(value, 'shape') else 'N/A'}")
+    
+    return outputs
 
 def export_to_coreml():
     """Export the EOMT model to CoreML format"""
@@ -60,10 +97,17 @@ def export_to_coreml():
     wrapped_model = EOMTWrapper(model)
     wrapped_model.eval()
     
-    # Create sample input
+    # For CoreML conversion, we might need to use CPU
+    print("🔄 Moving model to CPU for CoreML conversion...")
+    wrapped_model = wrapped_model.cpu()
+    
+    # Create sample input on CPU
     print("🔧 Creating sample input...")
-    sample_input = create_sample_input(processor)
+    sample_input = create_sample_input(processor, torch.device("cpu"))
     print(f"Sample input shape: {sample_input.shape}")
+    
+    # Debug model output structure
+    debug_model_output(model, sample_input)
     
     # Trace the model
     print("📝 Tracing model...")
@@ -77,11 +121,11 @@ def export_to_coreml():
             traced_model,
             inputs=[ct.TensorType(name="pixel_values", shape=sample_input.shape)],
             minimum_deployment_target=ct.target.iOS15,  # Adjust based on your needs
-            compute_units=ct.ComputeUnit.ALL  # Use all available compute units
+            compute_units=ct.ComputeUnit.CPU_AND_NE  # Use CPU and Neural Engine
         )
         
         # Save the model
-        output_path = "eomt_panoptic_segmentation.mlmodel"
+        output_path = "eomt_panoptic_segmentation.mlpackage"
         coreml_model.save(output_path)
         print(f"✅ CoreML model saved to: {output_path}")
         
@@ -90,7 +134,8 @@ def export_to_coreml():
         print(f"   - Model file: {output_path}")
         print(f"   - Input shape: {sample_input.shape}")
         print(f"   - Deployment target: iOS 15+")
-        print(f"   - Compute units: ALL (CPU + Neural Engine + GPU)")
+        print(f"   - Compute units: CPU + Neural Engine")
+        print(f"   - Model type: ML Program (.mlpackage)")
         
         # Test the model
         print("\n🧪 Testing CoreML model...")
@@ -102,18 +147,39 @@ def export_to_coreml():
         
         print("\n🎉 CoreML export completed successfully!")
         print("\n📱 Usage in iOS/macOS:")
-        print("   1. Add the .mlmodel file to your Xcode project")
+        print("   1. Add the .mlpackage file to your Xcode project")
         print("   2. Use Vision framework or CoreML directly")
         print("   3. Preprocess images to match input requirements")
         print("   4. Post-process outputs for segmentation results")
         
     except Exception as e:
         print(f"❌ Error during CoreML conversion: {e}")
-        print("\n🔧 Troubleshooting tips:")
-        print("   - Ensure coremltools is installed: pip install coremltools")
-        print("   - Check if model architecture is CoreML compatible")
-        print("   - Try different deployment targets")
-        print("   - Consider using a smaller model variant")
+        print("\n🔄 Trying alternative conversion approach...")
+        
+        try:
+            # Alternative: Try with different settings
+            coreml_model = ct.convert(
+                traced_model,
+                inputs=[ct.TensorType(name="pixel_values", shape=sample_input.shape)],
+                minimum_deployment_target=ct.target.iOS16,
+                compute_units=ct.ComputeUnit.CPU_ONLY
+            )
+            
+            # Save the model
+            output_path = "eomt_panoptic_segmentation.mlpackage"
+            coreml_model.save(output_path)
+            print(f"✅ CoreML model saved to: {output_path}")
+            
+        except Exception as e2:
+            print(f"❌ Alternative conversion also failed: {e2}")
+            print("\n🔧 Troubleshooting tips:")
+            print("   - Ensure coremltools is installed: pip install coremltools")
+            print("   - Check if model architecture is CoreML compatible")
+            print("   - Try different deployment targets")
+            print("   - Consider using a smaller model variant")
+            print("   - The EOMT model might not be fully compatible with CoreML")
+            print("   - Consider using ONNX export as an alternative")
+            return
 
 def create_ios_integration_guide():
     """Create a guide for iOS integration"""
@@ -121,7 +187,7 @@ def create_ios_integration_guide():
 # iOS Integration Guide for EOMT CoreML Model
 
 ## 1. Add Model to Xcode Project
-- Drag `eomt_panoptic_segmentation.mlmodel` into your Xcode project
+- Drag `eomt_panoptic_segmentation.mlpackage` into your Xcode project
 - Ensure "Add to target" is checked for your app target
 
 ## 2. Import Required Frameworks
