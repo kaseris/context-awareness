@@ -56,7 +56,7 @@ pip install scipy
 
 2. **Run the script**:
    ```bash
-   python segment_splitter.py
+   python coco_panoptic_eomt_large_640/segment_splitter.py
    ```
 
 ### Example Output
