@@ -1,0 +1,9 @@
+torch
+torchvision
+torchaudio
+transformers
+numpy
+transformers
+coremltools
+scipy
+matplotlib
